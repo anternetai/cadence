@@ -1,9 +1,11 @@
 "use client"
 
+import { useMemo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { useCoachingSession } from "@/lib/audio/use-coaching-session"
 import { CoachingOverlay } from "@/components/coach/coaching-overlay"
 import type { CoachingMessage } from "@/components/coach/coaching-overlay"
+import ReactiveOrb from "@/components/coach/reactive-orb"
 
 // ─── Idle / Start Screen ──────────────────────────────────────────────────────
 
@@ -148,6 +150,24 @@ function EndedScreen({
   )
 }
 
+// ─── Sentiment mapping ────────────────────────────────────────────────────────
+//
+// CoachingMessage.sentiment is "positive" | "negative" | "neutral"
+// ReactiveOrb.sentiment is "hostile" | "cold" | "neutral" | "warm" | "hot"
+// Map: positive → warm, negative → cold, neutral → neutral
+// (hot/hostile reserved for future AI-surfaced sentiments passed as strings)
+
+type OrbSentiment = "hostile" | "cold" | "neutral" | "warm" | "hot"
+
+function mapSentiment(
+  raw: "positive" | "negative" | "neutral" | null | undefined
+): OrbSentiment | null {
+  if (raw === "positive") return "warm"
+  if (raw === "negative") return "cold"
+  if (raw === "neutral") return "neutral"
+  return null
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function CoachPage() {
@@ -169,28 +189,137 @@ export default function CoachPage() {
 
   const isActive = state === "active" || state === "connecting"
 
+  // Extract sentiment from the most recent message that has a non-null sentiment
+  const orbSentiment = useMemo((): OrbSentiment | null => {
+    const typedMessages = messages as CoachingMessage[]
+    for (let i = typedMessages.length - 1; i >= 0; i--) {
+      const s = typedMessages[i].sentiment
+      if (s != null) return mapSentiment(s)
+    }
+    return null
+  }, [messages])
+
+  // Build the orb metrics shape from AudioMetrics (which has all the needed fields)
+  const orbMetrics = useMemo(() => {
+    if (!metrics) return null
+    return {
+      volume: metrics.volume,
+      isSpeaking: metrics.isSpeaking,
+      isProspectSpeaking: metrics.isProspectSpeaking,
+      pace: metrics.pace,
+      paceVsBaseline: metrics.paceVsBaseline,
+      talkRatio: metrics.talkRatio,
+      silenceDuration: metrics.silenceDuration,
+    }
+  }, [metrics])
+
   return (
-    <div className="min-h-screen bg-[oklch(0.06_0_0)] flex items-center justify-center">
-      <AnimatePresence mode="wait">
+    <div className="min-h-screen bg-[oklch(0.06_0_0)] flex items-center justify-center overflow-hidden">
+
+      {/* ── Orb layer — always behind content (z-0) ── */}
+      <AnimatePresence>
+        {/* Idle: ambient orb centered, subtle background glow */}
         {state === "idle" && (
-          <IdleScreen key="idle" onStart={startSession} />
+          <motion.div
+            key="orb-idle"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.6 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 1.2, ease: "easeInOut" }}
+            className="pointer-events-none absolute inset-0 flex items-center justify-center z-0"
+            style={{ transform: "translateX(10%)" }}
+          >
+            <ReactiveOrb
+              metrics={null}
+              sentiment={null}
+              isActive={false}
+              size="large"
+            />
+          </motion.div>
         )}
 
+        {/* Connecting: orb appears, dims slightly */}
         {state === "connecting" && (
-          <ConnectingScreen key="connecting" />
+          <motion.div
+            key="orb-connecting"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.45 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.8, ease: "easeInOut" }}
+            className="pointer-events-none fixed inset-0 flex items-center justify-center z-0"
+          >
+            <ReactiveOrb
+              metrics={null}
+              sentiment={null}
+              isActive={false}
+              size="large"
+            />
+          </motion.div>
         )}
 
+        {/* Active: reactive orb behind the coaching overlay */}
+        {state === "active" && (
+          <motion.div
+            key="orb-active"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.3 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.8, ease: "easeInOut" }}
+            className="pointer-events-none fixed inset-0 flex items-center justify-center z-0"
+          >
+            <ReactiveOrb
+              metrics={orbMetrics}
+              sentiment={orbSentiment}
+              isActive={true}
+              size="large"
+            />
+          </motion.div>
+        )}
+
+        {/* Ended: ambient orb, slightly brighter — celebrating completion */}
         {state === "ended" && (
-          <EndedScreen
-            key="ended"
-            duration={sessionDurationSeconds}
-            nudgeCount={messages.length}
-            onRestart={startSession}
-          />
+          <motion.div
+            key="orb-ended"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.75 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 1.5, ease: "easeInOut" }}
+            className="pointer-events-none absolute inset-0 flex items-center justify-center z-0"
+            style={{ transform: "translateX(-8%)" }}
+          >
+            <ReactiveOrb
+              metrics={null}
+              sentiment="warm"
+              isActive={false}
+              size="large"
+            />
+          </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Overlay — mounted while active or connecting */}
+      {/* ── Foreground content (z-10) ── */}
+      <div className="relative z-10 w-full flex items-center justify-center">
+        <AnimatePresence mode="wait">
+          {state === "idle" && (
+            <IdleScreen key="idle" onStart={startSession} />
+          )}
+
+          {state === "connecting" && (
+            <ConnectingScreen key="connecting" />
+          )}
+
+          {state === "ended" && (
+            <EndedScreen
+              key="ended"
+              duration={sessionDurationSeconds}
+              nudgeCount={messages.length}
+              onRestart={startSession}
+            />
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Overlay — mounted while active or connecting (z-50, defined in overlay itself) */}
       <AnimatePresence>
         {isActive && (
           <CoachingOverlay
